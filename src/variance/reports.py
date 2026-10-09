@@ -39,8 +39,8 @@ def write_excel(result, facts, out_path):
     ws = wb.active
     ws.title = "Summary"
     t = facts["totals"]
-    ws.append(["Budget & Variance report"])
-    ws["A1"].font = Font(bold=True, size=14)
+    ws.append(["Budget & Variance report" + ("  -  UNRECONCILED" if facts.get("unreconciled") else "")])
+    ws["A1"].font = Font(bold=True, size=14, color="C00000" if facts.get("unreconciled") else "000000")
     for k, v in [("Period", facts["period"].get("label") or f"{facts['period'].get('start')} to {facts['period'].get('end')}"),
                  ("As of", facts["as_of_date"]),
                  ("Flag rule", f"|variance| >= {_usd(facts['thresholds']['flag_min_cents'])} AND >= {facts['thresholds']['flag_pct']}%"),
@@ -49,8 +49,10 @@ def write_excel(result, facts, out_path):
                  ("Net variance (positive = favorable)", t["net_variance_cents"] / 100),
                  ("Flagged lines", t["flagged_count"]),
                  ("Unbudgeted spend", t["unbudgeted_cents"] / 100),
-                 ("Rows outside period (excluded)", t["excluded_row_count"]),
-                 ("", ""), ("", FOOTER)]:
+                 ("Committed (approved, unpaid claims)", t["committed_cents"] / 100),
+                 ("Rows outside period (excluded)", t["excluded_row_count"])] + \
+                [("Quality: " + f["severity"], f["message"]) for f in facts.get("quality_findings", [])] + \
+                [("", ""), ("", FOOTER)]:
         ws.append([k, v])
         if isinstance(v, float):
             ws.cell(ws.max_row, 2).number_format = _MONEY
@@ -60,14 +62,18 @@ def write_excel(result, facts, out_path):
     L = result.lines
     ws = wb.create_sheet("Lines")
     head = ["Source row", "Line ID", "Category", "Line", "Type", "Owner", "Budget", "Actual", "Variance",
-            "Variance %", "Status", "Flagged", "Txns", "Notes"]
+            "Variance %", "Status", "Flagged", "Txns", "Notes", "Committed", "Expected to date", "Pace variance",
+            "Projected", "Projection confidence", "Chip"]
+    d100 = lambda v: None if pd.isna(v) else int(v) / 100
     _sheet(ws, head, [[None if pd.isna(r.budget_source_row) else int(r.budget_source_row), r.line_id,
                        r.category, r.line_name, r.type, r.owner, r.budget_cents / 100, r.actual_cents / 100,
                        r.variance_cents / 100, None if r.variance_pct != r.variance_pct else r.variance_pct,
-                       r.status, "YES" if r.flagged else "", r.txn_count, ""] for r in L.itertuples()],
+                       r.status, "YES" if r.flagged else "", r.txn_count, "", r.committed_cents / 100,
+                       d100(r.expected_cents), d100(r.pace_variance_cents), d100(r.projection_cents),
+                       r.projection_confidence, r.chip] for r in L.itertuples()],
            {"Line": 28, "Category": 20, "Notes": 40})
     for row in range(2, ws.max_row + 1):
-        for col in (7, 8, 9):
+        for col in (7, 8, 9, 15, 16, 17, 18):
             ws.cell(row, col).number_format = _MONEY
         ws.cell(row, 10).number_format = _PCT
         fill = _FILL.get(ws.cell(row, 11).value)
@@ -77,7 +83,7 @@ def write_excel(result, facts, out_path):
     ws = wb.create_sheet("Transactions")
     red = facts.get("redacted")
     _sheet(ws, ["Source row", "Txn ID", "Date", "Amount (out +)", "Line ID", "Category", "Vendor", "Description"],
-           [[x.source_row, x.txn_id, x.date.date(), x.amount_cents / 100, x.line_id, x.category,
+           [[None if pd.isna(x.source_row) else int(x.source_row), x.txn_id, x.date.date(), x.amount_cents / 100, x.line_id, x.category,
              "" if red else x.vendor, "" if red else x.description] for x in result.txns.itertuples()],
            {"Description": 40, "Date": 12})
     for row in range(2, ws.max_row + 1):
@@ -114,9 +120,11 @@ def write_pdf(explanation_dict, facts, out_path):
     for d in explanation_dict["decisions_needed"][:6] or ["None."]:
         story.append(Paragraph("&bull; " + escape(str(d)), body))
     q = facts.get("quality_findings") or []
+    if facts.get("unreconciled"):
+        story.insert(1, Paragraph('<font color="#C00000"><b>UNRECONCILED: the actuals do not match the stated total. '
+                                  'Do not rely on these figures yet.</b></font>', body))
     story += [Spacer(1, 8), Paragraph(
-        "<i>Data quality: " + (f"{len(q)} finding(s) noted; see detail workbook." if q else
-                               "no automated quality checks have been run yet.") +
+        "<i>Data quality: " + (f"{len(q)} finding(s) noted; see detail workbook." if q else "no problems found.") +
         f" {facts['totals']['excluded_row_count']} row(s) fell outside the period and were left out.</i>", body)]
 
     def foot(canvas, doc):

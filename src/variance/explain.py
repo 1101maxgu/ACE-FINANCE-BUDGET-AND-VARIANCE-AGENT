@@ -1,5 +1,6 @@
 """Explanation backends (template, paste handoff, API slot) and the number guard."""
 import json
+import os
 import re
 from decimal import Decimal
 
@@ -21,11 +22,30 @@ def build_prompt(facts) -> str:
     return f"{PROMPT_PATH.read_text(encoding='utf-8')}\n\nFACTS:\n```json\n{facts_to_json(facts)}\n```\n"
 
 
-def explain_api(facts) -> dict:
-    """API backend slot. Not built until a key exists."""
-    # ponytail: add `anthropic` + python-dotenv, send build_prompt(facts), run parse_pasted_reply on the reply.
-    raise NotConfigured("The Claude API is not set up yet. Add ANTHROPIC_API_KEY to the local .env file "
-                        "(it is never stored in the shared folder), or use Template or Paste mode.")
+class ExplainError(Exception):
+    """The API reply could not be used (unreadable, or numbers not in the facts)."""
+
+
+def explain_api(facts, settings=None, client=None) -> dict:
+    """Ask Claude via the API. Raises NotConfigured when there is no ANTHROPIC_API_KEY (read from the
+    environment or a local .env); raises ExplainError if the reply fails parsing or the number guard.
+    `client` is for tests (any object with .messages.create)."""
+    if client is None:
+        from dotenv import load_dotenv
+        load_dotenv(ROOT / ".env")
+        key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if not key:
+            raise NotConfigured("The Claude API is not set up yet. Add ANTHROPIC_API_KEY to the local .env file "
+                                "(it is never stored in the shared folder), or use Template or Paste mode.")
+        import anthropic
+        client = anthropic.Anthropic(api_key=key)
+    model = (settings or {}).get("api_model", "claude-sonnet-5-5")
+    msg = client.messages.create(model=model, max_tokens=2000,
+                                 messages=[{"role": "user", "content": build_prompt(facts)}])
+    d, problems = parse_pasted_reply("".join(b.text for b in msg.content if getattr(b, "text", None)), facts)
+    if d is None or problems:
+        raise ExplainError("Claude's reply could not be used: " + " ".join(problems))
+    return d
 
 
 # ---------- template backend ----------
@@ -43,12 +63,31 @@ def _issue(ln):
         how = "over budget" if over else "under budget"
     pct = f" ({abs(ln['variance_pct'])}%)" if ln["variance_pct"] is not None else " (no budget was set)"
     who = ln["owner"] or "the report runner"
+    detail = f"Budget {_usd(ln['budget_cents'])}, actual {_usd(ln['actual_cents'])}."
+    if ln.get("projection_cents") is not None:
+        detail += (f" At the current pace the line would end at {_usd(ln['projection_cents'])} "
+                   f"({ln['projection_confidence']} confidence).")
+    tags = ln.get("tags") or []
+    notes = ln.get("coordinator_notes") or []
+    cur = [n for n in notes if n["state"] == "current"]
+    if cur:
+        cause, q = {"label": "answered", "text": f"{cur[-1]['author']} ({cur[-1]['date']}): {cur[-1]['text']}"}, ""
+    elif notes:
+        cause = {"label": "unknown", "text": "There are new transactions since the last note."}
+        q = f"{who}: new transactions arrived on {ln['line_name']} since {notes[-1]['author']}'s note. Does it still hold?"
+    elif "one_time_spike" in tags:
+        cause = {"label": "supported", "text": "One large one-time transaction accounts for most of the difference (tag one_time_spike)."}
+        q = ""
+    elif "recurring" in tags:
+        cause = {"label": "supported", "text": "The same vendor charges repeatedly on this line (tag recurring)."}
+        q = ""
+    else:
+        cause = {"label": "unknown", "text": "The cause is not known from the data."}
+        q = f"{who}: what drove the difference on {ln['line_name']}?"
     return {
         "line_id": ln["line_id"],
         "title": f"{ln['line_name']} is {_usd(ln['variance_cents'])} {how}{pct}",
-        "detail": f"Budget {_usd(ln['budget_cents'])}, actual {_usd(ln['actual_cents'])}.",
-        "cause": {"label": "unknown", "text": "The cause is not known from the data."},
-        "question": f"{who}: what drove the difference on {ln['line_name']}?",
+        "detail": detail, "cause": cause, "question": q,
     }
 
 
@@ -60,12 +99,15 @@ def explain_template(facts) -> dict:
     net = t["net_variance_cents"]
     head = {"on_track": "On track", "watch": "Watch", "off_track": "Off track"}[status]
     label = facts["period"].get("label")
-    headline = (f"{head}{' for ' + label if label else ''}: {t['flagged_count']} of {t['line_count']} lines flagged; "
+    headline = (f"{'UNRECONCILED. ' if facts.get('unreconciled') else ''}"
+                f"{head}{' for ' + label if label else ''}: {t['flagged_count']} of {t['line_count']} lines flagged; "
                 f"net result is {_usd(net)} {'better' if net >= 0 else 'worse'} than budget.")
     issues = [_issue(x) for x in fl[:5]]
+    realloc = [f"Move {_usd(r['amount_cents'])} from {r['from_name']} to {r['to_name']} (for approval; advice only)."
+               for r in facts.get("reallocation_candidates", [])]
     return {"headline": headline, "status": status, "top_issues": issues,
-            "decisions_needed": [i["question"] for i in issues if i["cause"]["label"] == "unknown"],
-            "reallocation_suggestions": []}
+            "decisions_needed": [i["question"] for i in issues if i["question"]],
+            "reallocation_suggestions": realloc}
 
 
 # ---------- number guard ----------

@@ -36,7 +36,10 @@ def test_redaction_hides_descriptions():
 def test_template_passes_its_own_guard(facts):
     e = explain.explain_template(facts)
     assert e["status"] == "off_track" and len(e["top_issues"]) == 4
-    assert all(i["cause"]["label"] == "unknown" and i["question"] for i in e["top_issues"])
+    by = {i["line_id"]: i for i in e["top_issues"]}
+    assert by["L2"]["cause"]["label"] == "unknown" and by["L2"]["question"]   # no transactions: ask
+    assert by["L1"]["cause"]["label"] == "supported" and by["L1"]["question"] == ""   # same vendor 3x: recurring
+    assert by["L3"]["cause"]["label"] == "supported"                                  # one big txn: one_time_spike
     assert explain.number_guard(e, facts) == []
     assert "$300.00 over budget (37.5%)" in " ".join(i["title"] for i in e["top_issues"])
 

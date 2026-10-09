@@ -11,3 +11,4 @@ class Result:
     txns: pd.DataFrame             # in-period actuals with the line_id each was assigned to
     as_of_date: object = None      # datetime.date
     period: dict = field(default_factory=dict)
+    quality: list = field(default_factory=list)   # data-quality findings (variance.quality)

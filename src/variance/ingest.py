@@ -278,15 +278,19 @@ def load_budget(file, profile: dict) -> pd.DataFrame:
         if _TOTAL_ROW.match(name):
             skipped.append((row, name))
             continue
-        cents = sum(_money(a, who, row, "the budget amount") or 0 for a in amts)
+        parts = [_money(a, who, row, "the budget amount") or 0 for a in amts]
+        cents = sum(parts)
         cat = str(r[c_cat]).strip() if c_cat else ""
         cat = cat or section or name
         recs.append({
             "line_id": str(r[c_id]).strip() if c_id and str(r[c_id]).strip() else f"L{len(recs) + 1:03d}",
             "category": cat, "line_name": name,
             "type": _norm_type(r[c_type], tdef) if c_type else tdef,
-            "budget_cents": cents, "owner": str(r[c_own]).strip() if c_own else "", "source_row": row})
-    out = pd.DataFrame(recs, columns=BUDGET_COLS + ["source_row"])
+            "budget_cents": cents, "owner": str(r[c_own]).strip() if c_own else "", "source_row": row,
+            "phasing": list(zip(months, parts)) if layout == "monthly_wide" else None})
+    out = pd.DataFrame(recs, columns=BUDGET_COLS + ["source_row", "phasing"])
+    if layout != "monthly_wide":
+        out = out.drop(columns="phasing")
     dup = out[out.line_id.duplicated()].line_id.tolist()
     if dup:
         raise IngestError(f"{who}: line id '{dup[0]}' appears more than once. Line ids must be unique.")

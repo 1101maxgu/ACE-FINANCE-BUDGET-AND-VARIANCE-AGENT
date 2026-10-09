@@ -7,9 +7,9 @@ from pathlib import Path
 
 import streamlit as st
 
-from variance import explain, facts as F, reports
+from variance import explain, reports
 from variance.settings import ROOT
-from .common import next_button
+from .common import get_facts, next_button
 
 
 def _name(r):
@@ -26,7 +26,9 @@ def render():
         next_button("Go to Check", "3. Check")
         return
     r = ss.result
-    facts = F.build_facts(r, s, bool(ss.get("redact", s.get("redact"))))
+    facts = get_facts()
+    if facts.get("unreconciled"):
+        st.error("UNRECONCILED: reports will carry an unreconciled banner until the stated total matches.")
     expl = ss.explanation
     if not expl:
         expl = explain.explain_template(facts)

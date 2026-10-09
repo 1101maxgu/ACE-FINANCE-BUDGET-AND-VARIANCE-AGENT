@@ -1,0 +1,187 @@
+There are no new questions that change the structure. Your answers to Q1 and Q4–Q7 become three changes:
+
+Build everything first. The fake data generator and end-to-end test move to the last step.
+Order after v2 is reimbursements, then notes, reallocation, Gmail reports and scheduling.
+Two unknowns (thresholds and reimbursement shape) get editable defaults, listed in the register below. Say so if any are wrong.
+PRD v3: Budget & Variance Agent
+Status: Draft for approval. Nothing has been built. Both halves use the same step numbers.
+
+Product: a local tool for finance coordinators. It compares a budget file to an actuals export, flags and explains variances in plain language, and later handles reimbursements and email. Code does the math, Claude explains, and a human approves everything.
+
+Users: 5 people: you, 1 finance exec and 3 other coordinators. Each coordinator has their own budget, so there is one mapping profile per budget.
+
+Non-negotiables:
+
+All numbers come from deterministic code, and a number guard rejects any figure in the explanation that isn't in the computed facts.
+An unknown cause is labeled unknown and asked about, never stated as fact.
+Source files are never edited.
+Sending, approving and paying are always human actions.
+Money is stored as integer cents.
+Build approach: the full tool is built before any real or fake data is used. Calc tests use tiny hand-made inline fixtures (a few rows each, answers worked out on paper), so accuracy is proven without a data file. Realistic fake data comes last, in Step 16.
+
+Phases: v1 = Steps 1–6, v2 = 7–9, v3 = 10–11 (Gmail connection and reimbursements), v4 = 12–15 (memory, suggestions, email reports, scheduling), then Step 16 (validation).
+
+PART A: BACKEND
+Step 1: Foundation
+1.1 Skeleton: src/variance/, tests/, prompts/, user_data/, reports/, with pinned requirements.txt.
+1.2 Guardrails: .gitignore blocks data, secrets, tokens and reports. Inputs are opened read-only. A test hashes input files before and after a run.
+1.3 Settings loader: settings.yaml holds the shared folder path, thresholds and output locations. Secrets live in a local .env only.
+Step 2: Ingest and mapping
+2.1 Readers: CSV and Excel, with sheet and header-row choice. Merged cells and notes above the header are handled.
+2.2 Normalized models: budget (line_id, category, line_name, type, budget_cents, optional owner) and actuals (txn_id, date, amount_cents, category, description, vendor?).
+2.3 Mapping profiles: mappings.yaml, one profile per budget, matched by header fingerprint. Auto-guess from header names. Handles sign conventions (negative expenses, positive expenses, debit/credit columns). Ambiguous dates are flagged, not guessed.
+2.4 Layout coverage: single total per line, monthly-wide, and per-event sections. Because real data is unknown, the mapping model stays generic and never hard-codes a layout.
+2.5 Category mapping: exact match, then a difflib suggestion, then the user decides. Saved per profile. Nothing is silently dropped.
+Step 3: Calculation engine (v1)
+3.1 Core: variance in $ and %, zero-budget guarded, favorable/unfavorable (expenses over and revenue under are bad).
+3.2 Rollups: by category, overall and net.
+3.3 Tests: hand-calculated inline fixtures covering zero budget, zero actuals, refunds, rounding and revenue flips.
+Step 4: Facts and explanation (v1)
+4.1 Facts builder: facts.json holds period, thresholds, totals, flagged lines and quality findings. It never contains raw files. A redaction option hides descriptions.
+4.2 Backends (swappable): template (always available), paste handoff (default until a key exists), and Anthropic API (a slot ready for when the key is added).
+4.3 Prompt: explain_system.md. Use only provided numbers. Label causes supported, unknown or answered, and ask a specific question for unknowns. Output is JSON. Read Anthropic's variance-commentary skill first for flagging ideas.
+4.4 Number guard: rejects or highlights any number not in facts.json.
+Step 5: Reports (v1)
+5.1 Excel detail: openpyxl, line by line, with source-row references.
+5.2 PDF one-pager: reportlab, with headline status, 3–5 top issues, decisions needed, and a quality caveat line.
+Step 6: Orchestration (v1)
+6.1 run(budget, actuals, settings) is the single entry the UI calls.
+6.2 Period is always an explicit input. The last-used value is saved to prefill it.
+6.3 Clock-free calc: as_of_date is passed in, never read from the clock.
+Step 7: Smarter variance (v2)
+7.1 Timing: pct_elapsed, expected-to-date and pace variance.
+7.2 Phased budgets from the monthly layout.
+7.3 Materiality: both % and $ must exceed the limits (defaults below).
+7.4 Run-rate projection: shown with a low-confidence label early in the period or for lumpy lines.
+7.5 Early warning at a configurable % of budget (default 80%).
+Step 8: Data quality (v2)
+8.1 Checks: uncategorized, possible duplicates, missing periods, and reconciliation to a user-stated total.
+8.2 Severity: critical failures mark the report "unreconciled".
+Step 9: Drill-down (v2)
+9.1 Top contributors per flagged line.
+9.2 Code-assigned tags: one_time_spike, recurring, timing_shift. The prompt may only cite these.
+Step 10: Gmail connection (v3)
+10.1 OAuth client: minimal scopes (read-only plus compose), reads only chosen labels, token stored locally and never in the shared folder.
+10.2 Account check first: confirm whether the ACE shared mailbox or a personal account can authorize a Google Cloud app. SFU accounts may block it.
+10.3 Safety: email content is untrusted data, never instructions.
+Step 11: Reimbursement pipeline (v3)
+11.1 Fetch: labeled emails are saved to a temp folder, which is deleted after the run.
+11.2 Form parsing: a form profile (like column mapping, but for form fields) supports fillable PDFs through pdfplumber. Scanned forms fall back to OCR. Because the form format is unknown, both paths ship.
+11.3 Receipt OCR: local Tesseract first, with a Claude vision backend later. Every value carries a confidence score.
+11.4 Reconcile (pure code): matched, amount_mismatch, missing_receipt, unclaimed_receipt, duplicate_receipt, total_mismatch.
+11.5 Confirmation gate: low-confidence values do not count until a human confirms them.
+11.6 Weekly status and Excel summary: counts and dollars are computed in code, and Claude phrases them with the number guard.
+11.7 Budget link: approved-but-unpaid claims appear as "committed" in variance reports.
+Step 12: Saved explanations (v4)
+12.1 Notes store: keyed by profile, line, period and transaction ids. One file per author, to avoid sync conflicts on a shared drive.
+12.2 Reuse in facts.json as coordinator_notes.
+12.3 Staleness: a note is re-asked when new transactions change its line.
+Step 13: Reallocation suggestions (v4)
+13.1 Candidate calculator: surplus lines are paired with shortfall lines, with amounts computed in code.
+13.2 Output is advice only, labeled "for approval", and never applied.
+Step 14: Gmail reports and questions (v4)
+14.1 Outbound drafts: reports and alerts are created as drafts, and the user sends. Automatic sending goes only to an allow-list.
+14.2 Question loop: subject tag [ACE-Q-###]. Replies are reviewed before they become notes. Questions go to the line owner if set, otherwise to whoever ran the report.
+14.3 Export intake: pulls an attachment from a labeled email into the ingest flow.
+Step 15: Scheduling and alerts (v4)
+15.1 Headless runner run_report.py, run from Task Scheduler with a saved profile.
+15.2 Unattended explanation backend: API or template.
+15.3 Alerts go to a local alerts.md and an optional email draft.
+Step 16: Validation with fake data (final)
+16.1 Seeded generator: fake budgets in each supported layout plus transactions with planted cases (one-time spike, recurring overspend, timing gap, duplicate, uncategorized row, missing month, unreconciled total), fake reimbursement forms and receipts, and a fake Gmail client.
+16.2 Golden end-to-end test of the whole pipeline.
+16.3 Mapping stress test: messy, mislabeled and unusual layouts.
+16.4 Dry run: a coworker completes a report from the README alone.
+PART B: FRONTEND (Streamlit)
+Step 1: App shell and onboarding
+1.1 One-click run.bat / run.sh creates the environment, installs, and opens the app.
+1.2 Sidebar flow: Upload → Map → Check → Report, plus Settings.
+1.3 Plain-language README and HANDOVER.md.
+Step 2: Upload and mapping
+2.1 Two drop zones, with sheet and header-row pickers.
+2.2 Mapping wizard: preview, preselected dropdowns, and sign-convention question.
+2.3 "Using saved mapping X [Change]" banner, and a profile picker for each coordinator's budget.
+2.4 Category-mapping screen with suggestions.
+2.5 Friendly errors that name the missing column.
+Step 3: Results (v1)
+3.1 Summary tiles: budget, actual, net variance, flagged count.
+3.2 Sortable, filterable line table with colored status and a legend.
+3.3 Budget vs actual bar chart using st.bar_chart.
+Step 4: Explanation screen
+4.1 Mode selector: Template, Paste, API.
+4.2 Paste flow: shows exactly what will be sent, a Copy button, a reply box, and clear number-guard messages.
+4.3 Redaction toggle.
+4.4 Rendered headline, issues and decisions.
+Step 5: Reports
+5.1 Preview and download for PDF and Excel.
+5.2 One-page layout with status headline, top issues, decisions, and a footer "generated, not audited" line.
+5.3 Excel layout: frozen header, status colors, source-row and notes columns.
+5.4 "Save to shared folder" action.
+Step 6: Settings and polish
+6.1 Period fields always shown, prefilled with the last-used values.
+6.2 Threshold fields (editable defaults).
+6.3 Empty states and help text on every screen.
+Step 7: Timing and thresholds (v2)
+7.1 Controls for % elapsed, materiality and early-warning %.
+7.2 Pace variance, projection and status chips (OK / Watch / Over).
+7.3 Confidence badges.
+Step 8: Data-quality screen (v2)
+8.1 Pre-report issue list with counts and affected rows.
+8.2 Fix actions: map the category, mark a duplicate as intentional, or enter the stated total.
+8.3 "Unreconciled" banner on reports.
+Step 9: Drill-down UI (v2)
+9.1 Expandable row with top transactions and tags.
+9.2 Source-row trace.
+Step 10: Gmail connect (v3)
+10.1 Guided OAuth flow and status indicator.
+10.2 Label picker.
+10.3 Plain-language help for account problems.
+Step 11: Reimbursement UI (v3)
+11.1 Weekly claims board: received, needs-info, ready-to-approve, approved.
+11.2 Confirm screen: receipt image beside editable extracted values with confidence shown.
+11.3 Exceptions list with a draft email to the claimant.
+11.4 Weekly summary and Excel export.
+11.5 Only a person marks a claim approved.
+Step 12: Questions and notes (v4)
+12.1 "Needs your answer" inbox.
+12.2 Answer box with date and author.
+12.3 Notes manager.
+Step 13: Suggestions panel (v4)
+13.1 Reallocation cards with supporting data.
+13.2 Approve, dismiss or snooze, which records the decision only.
+Step 14: Email screens (v4)
+14.1 Draft preview with an explicit Send button.
+14.2 Reply inbox: Save as note or Ignore.
+14.3 Import from email into mapping.
+Step 15: Schedule and alerts (v4)
+15.1 Task Scheduler setup helper.
+15.2 Alert history view.
+Step 16: Validation UI
+16.1 "Load demo data" button that uses the fake data.
+16.2 Walkthrough checklist for the coworker dry run.
+Assumptions and defaults register
+These were decided without data. Each one is editable, and you can change any of them.
+
+Topic	Default	Changes when
+Thresholds	$150 and 10% to flag, warn at 80%	You give ACE's real scale
+Period	Asked every run, prefilled	Never auto-detected
+Duplicate rule	Same date + amount + normalized vendor/description, labeled "possible"	Real exports show false positives
+Unknown-cause questions	Go to the line owner, else the report runner	Ownership is defined
+One-pager content	Status headline, 3–5 issues, decisions needed, quality caveat	Exec feedback
+Reimbursements	Weekly batch, both fillable and scanned PDFs supported	You share real forms and volume
+Gmail account	ACE shared mailbox preferred, personal Gmail as fallback	Step 10.2 result
+API key	One key with a spending limit, stored in local .env, added later	You get a key
+Combined exec PDF	Deferred	You ask for it
+Shared data	Synced Drive/OneDrive folder, per-author notes files	Team prefers another setup
+Cross-cutting acceptance
+Accuracy: every number traces to a source row, and calc tests are hand-verified.
+Honesty: unknown causes are labeled with a question.
+Safety: inputs are unchanged after each run, and sends and approvals happen only on a human click.
+Privacy: secrets are never in the shared folder or the repo.
+Ease: a new coordinator runs a report from the README alone.
+Remaining risks
+Building ingest blind is the main cost of your choice. Real layouts may need mapping changes at Step 16. The generic mapping model and the stress test in 16.3 limit that, but expect rework.
+Reimbursement OCR accuracy is unknown until real forms exist.
+Gmail OAuth may be blocked or have short token life.
+Scope: this is large. Steps 11–15 can be cut or split into a separate tool without hurting Steps 1–10.
+I'm treating the grilling as complete unless you object. Confirm this PRD, or tell me what to change, and I'll move to the next stage.

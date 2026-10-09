@@ -30,9 +30,11 @@ def render():
         end = c2.date_input("Period end", value=_d(p.get("end")), format="YYYY-MM-DD")
         st.subheader("When is a line flagged?")
         c3, c4 = st.columns(2)
-        pct = c3.number_input("At least this % off budget", min_value=0.0, value=float(s["flag_pct"]), step=1.0)
+        pct = c3.number_input("At least this % off budget", min_value=0.0, value=float(s["flag_pct"]), step=1.0,
+                              help="A line is flagged only when BOTH limits are passed (default 10% and $150).")
         dollars = c4.number_input("and at least this many dollars off", min_value=0.0,
-                                  value=s["flag_min_cents"] / 100, step=10.0)
+                                  value=s["flag_min_cents"] / 100, step=10.0,
+                                  help="Small dollar differences are ignored even if the percentage is large.")
         st.subheader("Folders and defaults")
         shared = st.text_input("Shared folder for reports (optional)", value=s.get("shared_folder", ""),
                                help="A synced Drive/OneDrive folder. Leave empty to keep reports on this computer only.")
