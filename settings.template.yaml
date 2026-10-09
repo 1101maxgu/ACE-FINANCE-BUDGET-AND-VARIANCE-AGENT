@@ -1,0 +1,17 @@
+# Copy to user_data/settings.yaml (the app does this on first save). Never put secrets here:
+# the API key goes in a local .env file (ANTHROPIC_API_KEY=...).
+shared_folder: ""          # synced Drive/OneDrive folder, optional
+reports_dir: reports       # where reports are written
+flag_pct: 10.0             # flag a line when |variance %| >= this ...
+flag_min_cents: 15000      # ... AND |variance| >= this (15000 = $150.00)
+early_warning_pct: 80      # used from v2
+explain_mode: paste        # template | paste | api
+redact: false              # hide transaction descriptions/vendors from facts
+period:                    # asked every run, never auto-detected
+  label: ""
+  start: ""                # YYYY-MM-DD
+  end: ""
+last_period:               # prefilled next run
+  label: ""
+  start: ""
+  end: ""

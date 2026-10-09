@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.env
+user_data/*
+reports/*
+token*.json
+credentials*.json
+*.csv
+*.xlsx
+*.pdf
+!user_data/.gitkeep
+!reports/.gitkeep
+!sample_data/**
